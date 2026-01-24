@@ -8,6 +8,50 @@ term_proc() {
 
 trap term_proc SIGTERM
 
+update_database_tls_config() {
+    local key="$1"
+    local value="$2"
+    local config_file="$3"
+    local enable="$4"
+
+    [[ -z "$key" || -z "$config_file" ]] && { echo "key/config_file required"; return 1; }
+    [[ ! -f "$config_file" ]] && { echo "Config file not found: $config_file"; return 1; }
+
+    if [[ "$enable" == true && -z "$value" ]]; then
+        #echo "Not setting $key as value is empty..."
+        return 0
+    fi
+
+    if [[ "$enable" == true && "$key" =~ ^(ssl_ca|ssl_cert|ssl_key)$ ]]; then
+        if [[ ! -f "$value" ]]; then
+            echo "Cannot configure TLS key $key: file $value does not exist..."
+            return 1
+        fi
+    fi
+
+    local tmp
+    tmp="$(mktemp)"
+
+    if [[ "$enable" == true ]]; then
+        if grep -qE "^[[:space:]]*'${key}'[[:space:]]*=>" "$config_file"; then
+            sed -E "s@^([[:space:]]*'${key}'[[:space:]]*=>)[^,]*,@\1 '${value}',@g" \
+              "$config_file" > "$tmp"
+        else
+            sed -E "/public[[:space:]]+\\\$default[[:space:]]*=[[:space:]]*\\[/a\\
+        '${key}' => '${value}'," \
+              "$config_file" > "$tmp"
+        fi
+    else
+        sed -E "/^[[:space:]]*'${key}'[[:space:]]*=>/d" \
+          "$config_file" > "$tmp"
+    fi
+
+    if [[ -s "$tmp" ]]; then
+        cat "$tmp" > "$config_file"
+    fi
+    rm -f "$tmp"
+}
+
 init_mysql(){
     # Test when MySQL is ready....
     # wait for Database come ready
@@ -61,6 +105,52 @@ init_misp_data_files(){
     [ -f $MISP_APP_CONFIG_PATH/email.php ] || dd if=$MISP_APP_CONFIG_PATH.dist/email.php of=$MISP_APP_CONFIG_PATH/email.php
     [ -f $MISP_APP_CONFIG_PATH/routes.php ] || dd if=$MISP_APP_CONFIG_PATH.dist/routes.php of=$MISP_APP_CONFIG_PATH/routes.php
 
+    if ! grep -q "Detect what auth modules" "$MISP_APP_CONFIG_PATH/bootstrap.php"; then
+        echo "... patch bootstrap.php settings"
+        chmod +w $MISP_APP_CONFIG_PATH/bootstrap.php
+        # workaround for https://forums.docker.com/t/sed-couldnt-open-temporary-file-xyz-permission-denied-when-using-virtiofs/125473
+        sed -z "s|CakePlugin::loadAll(array(.*CakeResque.*));||g" $MISP_APP_CONFIG_PATH/bootstrap.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/bootstrap.php; rm tmp
+        sed "s|CakePlugin::load('AadAuth');||g" $MISP_APP_CONFIG_PATH/bootstrap.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/bootstrap.php; rm tmp
+        sed "s|CakePlugin::load('CertAuth');||g" $MISP_APP_CONFIG_PATH/bootstrap.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/bootstrap.php; rm tmp
+        sed "s|CakePlugin::load('LdapAuth');||g" $MISP_APP_CONFIG_PATH/bootstrap.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/bootstrap.php; rm tmp
+        sed "s|CakePlugin::load('LinOTPAuth');||g" $MISP_APP_CONFIG_PATH/bootstrap.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/bootstrap.php; rm tmp
+        sed "s|CakePlugin::load('OidcAuth');||g" $MISP_APP_CONFIG_PATH/bootstrap.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/bootstrap.php; rm tmp
+        sed "s|CakePlugin::load('ShibbAuth');||g" $MISP_APP_CONFIG_PATH/bootstrap.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/bootstrap.php; rm tmp
+        cat <<EOT >> $MISP_APP_CONFIG_PATH/bootstrap.php
+
+/**
+ * Detect what auth modules need to be loaded based on the loaded config
+ */
+
+if (Configure::read('AadAuth')) {
+    CakePlugin::load('AadAuth');
+}
+
+if (Configure::read('CertAuth')) {
+    CakePlugin::load('CertAuth');
+}
+
+if (Configure::read('LdapAuth')) {
+    CakePlugin::load('LdapAuth');
+}
+
+if (Configure::read('LinOTPAuth')) {
+    CakePlugin::load('LinOTPAuth');
+}
+
+if (Configure::read('OidcAuth')) {
+    CakePlugin::load('OidcAuth');
+}
+
+if (Configure::read('ShibbAuth')) {
+    CakePlugin::load('ShibbAuth');
+}
+
+EOT
+    else
+        echo "... patch bootstrap.php settings not required"
+    fi
+
     echo "... initialize database.php settings"
     # workaround for https://forums.docker.com/t/sed-couldnt-open-temporary-file-xyz-permission-denied-when-using-virtiofs/125473
     # sed -i "s/localhost/$MYSQL_HOST/" $MISP_APP_CONFIG_PATH/database.php
@@ -75,6 +165,13 @@ init_misp_data_files(){
     sed "s/db\s*password/$MYSQL_PASSWORD/" $MISP_APP_CONFIG_PATH/database.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/database.php; rm tmp
     sed "s/'database' => 'misp'/'database' => '$MYSQL_DATABASE'/" $MISP_APP_CONFIG_PATH/database.php > tmp; cat tmp > $MISP_APP_CONFIG_PATH/database.php; rm tmp
 
+    # Enable MySQL TLS immediately, as TLS requiring hosts like AWS RDS may banlist non-TLS connecting hosts
+    # Conversely, this is also a good spot to disable it if required
+
+    update_database_tls_config ssl_ca "$MYSQL_TLS_CA" "$MISP_APP_CONFIG_PATH/database.php" "$MYSQL_TLS"
+    update_database_tls_config ssl_cert "$MYSQL_TLS_CERT" "$MISP_APP_CONFIG_PATH/database.php" "$MYSQL_TLS"
+    update_database_tls_config ssl_key "$MYSQL_TLS_KEY" "$MISP_APP_CONFIG_PATH/database.php" "$MYSQL_TLS"
+
     echo "... initialize email.php settings"
     chmod +w $MISP_APP_CONFIG_PATH/email.php
     tee $MISP_APP_CONFIG_PATH/email.php > /dev/null <<EOT
@@ -84,7 +181,7 @@ class EmailConfig {
         'transport'     => 'Smtp',
         'from'          => array('misp-dev@admin.test' => 'Misp DEV'),
         'host'          => '$SMTP_FQDN',
-        'port'          => 25,
+        'port'          => $SMTP_PORT,
         'timeout'       => 30,
         'client'        => null,
         'log'           => false,
@@ -93,7 +190,7 @@ class EmailConfig {
         'transport'     => 'Smtp',
         'from'          => array('misp-dev@admin.test' => 'Misp DEV'),
         'host'          => '$SMTP_FQDN',
-        'port'          => 25,
+        'port'          => $SMTP_PORT,
         'timeout'       => 30,
         'client'        => null,
         'log'           => false,
@@ -119,14 +216,13 @@ class EmailConfig {
         'emailFormat'   => null,
         'transport'     => 'Smtp',
         'host'          => '$SMTP_FQDN',
-        'port'          => 25,
+        'port'          => $SMTP_PORT,
         'timeout'       => 30,
         'client'        => null,
         'log'           => true,
     );
 }
 EOT
-    chmod -w $MISP_APP_CONFIG_PATH/email.php
 
     # Init files (shared with host)
     echo "... initialize app files"
@@ -151,7 +247,7 @@ update_misp_data_files(){
         fi
     fi
     for DIR in $(ls /var/www/MISP/app/files.dist); do
-        if [ "$DIR" = "certs" ] || [ "$DIR" = "img" ] || [ "$DIR" == "taxonomies" ] ; then
+        if [ "$DIR" = "certs" ] || [ "$DIR" = "img" ] || [ "$DIR" == "taxonomies" ] || [ "$DIR" == "terms" ] || [ "$DIR" == "misp-objects" ] ; then
             echo "... rsync -azh \"/var/www/MISP/app/files.dist/$DIR\" \"/var/www/MISP/app/files/\""
             rsync -azh "/var/www/MISP/app/files.dist/$DIR" "/var/www/MISP/app/files/"
         else
@@ -191,7 +287,7 @@ enforce_misp_data_permissions(){
     # Directories are also writable, because there seems to be a requirement to add new files every once in a while
     echo "... chmod -R 0770 directories /var/www/MISP/app/Config" && find /var/www/MISP/app/Config -not -perm 770 -type d -exec chmod 0770 {} +
     # We make configuration files read only
-    echo "... chmod 600 /var/www/MISP/app/Config/{config,database,email}.php" && chmod 600 /var/www/MISP/app/Config/{config,database,email}.php
+    echo "... chmod 600 /var/www/MISP/app/Config/{config,database,email}.php" && chmod 600 /var/www/MISP/app/Config/{bootstrap,config,database,email}.php
 }
 
 flip_nginx() {
@@ -224,6 +320,10 @@ init_nginx() {
     sed -i "s/fastcgi_send_timeout .*;/fastcgi_send_timeout ${FASTCGI_SEND_TIMEOUT};/" /etc/nginx/includes/misp
     echo "... adjusting 'fastcgi_connect_timeout' to ${FASTCGI_CONNECT_TIMEOUT}"
     sed -i "s/fastcgi_connect_timeout .*;/fastcgi_connect_timeout ${FASTCGI_CONNECT_TIMEOUT};/" /etc/nginx/includes/misp
+
+    # Adjust maximum allowed size of the client request body
+    echo "... adjusting 'client_max_body_size' to ${NGINX_CLIENT_MAX_BODY_SIZE}"
+    sed -i "s/client_max_body_size .*;/client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};/" /etc/nginx/includes/misp
 
     # Adjust forwarding header settings (clean up first)
     sed -i '/real_ip_header/d' /etc/nginx/includes/misp
@@ -333,13 +433,6 @@ init_nginx() {
         echo "... TLS certificates found"
     fi
     
-    if [[ ! -f /etc/nginx/certs/dhparams.pem ]]; then
-        echo "... generating new DH parameters"
-        openssl dhparam -out /etc/nginx/certs/dhparams.pem 2048
-    else
-        echo "... DH parameters found"
-    fi
-
     if [[ "$FASTCGI_STATUS_LISTEN" != "" ]]; then
         echo "... enabling php-fpm status page"
         ln -s /etc/nginx/sites-available/php-fpm-status /etc/nginx/sites-enabled/php-fpm-status
@@ -352,6 +445,10 @@ init_nginx() {
     flip_nginx false false
 }
 
+# Hinders further execution when sourced from other scripts
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return
+fi
 
 # Initialize MySQL
 echo "INIT | Initialize MySQL ..." && init_mysql

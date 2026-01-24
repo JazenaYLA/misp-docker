@@ -1,108 +1,192 @@
 ARG DOCKER_HUB_PROXY=""
 
 
-FROM "${DOCKER_HUB_PROXY}python:3.12-slim-bookworm" AS php-base
-    ENV DEBIAN_FRONTEND noninteractive
+FROM "${DOCKER_HUB_PROXY}python:3.12-slim-trixie" AS php-base
+ENV DEBIAN_FRONTEND=noninteractive
+ARG CORE_TAG
+ARG CORE_COMMIT
+ARG PHP_VER
+ARG CORE_FLAVOR
 
-    # Uncomment when building in corporate environments
-    # COPY ./cert.pem /usr/local/share/ca-certificates/rootca.pem
-    # COPY ./cert.pem /usr/lib/ssl/cert.pem
+# Uncomment when building in corporate environments
+# COPY ./cert.pem /usr/local/share/ca-certificates/rootca.pem
+# COPY ./cert.pem /usr/lib/ssl/cert.pem
 
-    RUN apt-get update; apt-get install -y --no-install-recommends \
-        lsb-release \
-        ca-certificates \
-        curl
-
+RUN <<-EOF
+        apt-get update
+        if [ "${CORE_FLAVOR}" = "slim" ]; then
+            apt-get install -y --no-install-recommends \
+                lsb-release \
+                ca-certificates \
+                tini \
+                gettext \
+                procps \
+                sudo \
+                nginx \
+                openssl \
+                gpg \
+                gpg-agent \
+                mariadb-client \
+                rsync \
+                rsyslog \
+                php8.4 \
+                php8.4-curl \
+                php8.4-xml \
+                php8.4-mbstring \
+                php8.4-mysql \
+                php8.4-redis \
+                php8.4-gd \
+                php8.4-fpm \
+                php8.4-zip \
+                unzip \
+                zip \
+                curl \
+                uuid-runtime \
+                jq
+        else
+            apt-get install -y --no-install-recommends \
+                lsb-release \
+                ca-certificates \
+                tini \
+                gettext \
+                procps \
+                sudo \
+                nginx \
+                openssl \
+                gpg \
+                gpg-agent \
+                mariadb-client \
+                rsync \
+                rsyslog \
+                php8.4 \
+                php8.4-apcu \
+                php8.4-curl \
+                php8.4-xml \
+                php8.4-intl \
+                php8.4-bcmath \
+                php8.4-mbstring \
+                php8.4-mysql \
+                php8.4-redis \
+                php8.4-gd \
+                php8.4-fpm \
+                php8.4-zip \
+                php8.4-ldap \
+                libmagic1 \
+                libldap-common \
+                librdkafka1 \
+                libbrotli1 \
+                libsimdjson25 \
+                libzstd1 \
+                ssdeep \
+                libfuzzy2 \
+                unzip \
+                zip \
+                curl \
+                uuid-runtime \
+                jq
+        fi
+EOF
 
 FROM php-base AS composer-build
-    ENV DEBIAN_FRONTEND noninteractive
-    ENV COMPOSER_ALLOW_SUPERUSER 1
-    ARG CORE_TAG
-    ARG CORE_COMMIT
+ENV COMPOSER_ALLOW_SUPERUSER=1
 
-    RUN apt-get install -y --no-install-recommends \
-        php8.2 \
-        php8.2-apcu \
-        php8.2-curl \
-        php8.2-xml \
-        php8.2-intl \
-        php8.2-bcmath \
-        php8.2-mbstring \
-        php8.2-mysql \
-        php8.2-redis \
-        php8.2-gd \
-        php8.2-fpm \
-        php8.2-zip \
-        unzip \
-        && apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp
+RUN curl -o /tmp/composer.json https://raw.githubusercontent.com/MISP/MISP/${CORE_COMMIT:-${CORE_TAG}}/app/composer.json
+RUN sed -i '/cake-resque/d' /tmp/composer.json
+RUN sed -i 's/authentication",/authentication"/' /tmp/composer.json
 
-    WORKDIR /tmp
-    RUN curl -o /tmp/composer.json https://raw.githubusercontent.com/MISP/MISP/${CORE_COMMIT:-${CORE_TAG}}/app/composer.json
-    COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
-    RUN composer config --no-interaction allow-plugins.composer/installers true
-    RUN composer install
-    RUN composer require --with-all-dependencies --no-interaction \
-        elasticsearch/elasticsearch:^8.7.0 \
-        jakub-onderka/openid-connect-php:^1.0.0 \
-        aws/aws-sdk-php
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+RUN composer config --no-interaction allow-plugins.composer/installers true
+RUN composer install
+RUN <<-EOF
+        if [ "${CORE_FLAVOR}" = "slim" ]; then
+            :
+        else
+            composer require --with-all-dependencies --no-interaction \
+                elasticsearch/elasticsearch:^8.7.0 \
+                jakub-onderka/openid-connect-php:^1.0.0 \
+                certmichelin/openid-connect-php:1.3.0 \
+                aws/aws-sdk-php
+        fi
+EOF
 
 
 FROM php-base AS php-build
-    ENV DEBIAN_FRONTEND noninteractive
-    ENV TZ Etc/UTC
+ENV TZ=Etc/UTC
 
-    RUN apt-get install -y --no-install-recommends \
-        gcc \
-        g++ \
-        git \
-        make \
-        php8.2 \
-        php8.2-dev \
-        php8.2-xml \
-        php-pear \
-        libbrotli-dev \
-        libfuzzy-dev \
-        librdkafka-dev \
-        libsimdjson-dev \
-        libzstd-dev \
-        && apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+RUN <<-EOF
+        if [ "${CORE_FLAVOR}" = "slim" ]; then
+            apt-get install -y --no-install-recommends \
+                gcc \
+                g++ \
+                git \
+                make \
+                php8.4-dev \
+                php-pear
+        else
+            apt-get install -y --no-install-recommends \
+                gcc \
+                g++ \
+                git \
+                make \
+                php8.4-dev \
+                php-pear \
+                libbrotli-dev \
+                libfuzzy-dev \
+                librdkafka-dev \
+                libsimdjson-dev \
+                libzstd-dev
+        fi
+        apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+EOF
 
-    RUN update-alternatives --set php /usr/bin/php8.2
-    RUN update-alternatives --set php-config /usr/bin/php-config8.2
-    RUN update-alternatives --set phpize /usr/bin/phpize8.2
+RUN update-alternatives --set php /usr/bin/php8.4
+RUN update-alternatives --set php-config /usr/bin/php-config8.4
+RUN update-alternatives --set phpize /usr/bin/phpize8.4
 
-    RUN cp "/usr/lib/$(gcc -dumpmachine)"/libfuzzy.* /usr/lib
-    RUN pecl channel-update pecl.php.net && \
-        pecl install rdkafka && \
-        pecl install simdjson && \
-        pecl install zstd && \
-        pecl install brotli
+RUN <<-EOF
+        pecl channel-update pecl.php.net
+        if [ "${CORE_FLAVOR}" = "slim" ]; then
+            tar -czf /pecl_libs.tar.gz -T /dev/null
+        else
+            cp "/usr/lib/$(gcc -dumpmachine)"/libfuzzy.* /usr/lib
+            pecl install rdkafka
+            pecl install simdjson
+            pecl install zstd
+            pecl install brotli
+            git clone --recursive --depth=1 https://github.com/JakubOnderka/pecl-text-ssdeep.git /tmp/pecl-text-ssdeep
+            cd /tmp/pecl-text-ssdeep && phpize && ./configure && make && make install
+            tar -czf /pecl_libs.tar.gz \
+                /usr/lib/php/${PHP_VER}/ssdeep.so \
+                /usr/lib/php/${PHP_VER}/rdkafka.so \
+                /usr/lib/php/${PHP_VER}/brotli.so \
+                /usr/lib/php/${PHP_VER}/simdjson.so \
+                /usr/lib/php/${PHP_VER}/zstd.so
+        fi
+EOF
 
-    # install pecl-text-ssdeep 1.2
-    RUN git clone --recursive --depth=1 https://github.com/JakubOnderka/pecl-text-ssdeep.git /tmp/pecl-text-ssdeep
-    RUN cd /tmp/pecl-text-ssdeep && phpize && ./configure && make && make install
 
 FROM php-base AS python-build
-    ENV DEBIAN_FRONTEND noninteractive   
-    ARG CORE_TAG
-    ARG CORE_COMMIT
-    ARG PYPI_REDIS_VERSION
-    ARG PYPI_LIEF_VERSION
-    ARG PYPI_PYDEEP2_VERSION
-    ARG PYPI_PYTHON_MAGIC_VERSION
-    ARG PYPI_MISP_LIB_STIX2_VERSION
-    ARG PYPI_MAEC_VERSION
-    ARG PYPI_MIXBOX_VERSION
-    ARG PYPI_CYBOX_VERSION
-    ARG PYPI_PYMISP_VERSION
-    ARG PYPI_MISP_STIX_VERSION
+ARG PYPI_REDIS_VERSION
+ARG PYPI_LIEF_VERSION
+ARG PYPI_PYDEEP2_VERSION
+ARG PYPI_PYTHON_MAGIC_VERSION
+ARG PYPI_MISP_LIB_STIX2_VERSION
+ARG PYPI_MAEC_VERSION
+ARG PYPI_MIXBOX_VERSION
+ARG PYPI_CYBOX_VERSION
+ARG PYPI_PYMISP_VERSION
+ARG PYPI_MISP_STIX_VERSION
+ARG PYPI_TAXII2_CLIENT
+ARG PYPI_SETUPTOOLS_VERSION
+ARG PYPI_SUPERVISOR_VERSION
 
-    RUN apt-get install -y --no-install-recommends \
-        git \
-        && apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get install -y --no-install-recommends \
+    git \
+    && apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
-    # Download MISP using git in the /var/www/ directory. Remove unnecessary items.
-    RUN <<-EOF
+# Download MISP using git in the /var/www/ directory. Remove unnecessary items.
+RUN <<-EOF
         if [ ! -z "${CORE_COMMIT}" ]; then
             git clone https://github.com/MISP/MISP.git /var/www/MISP && cd /var/www/MISP && git checkout "${CORE_COMMIT}"
         else
@@ -111,7 +195,7 @@ FROM php-base AS python-build
         cd /var/www/MISP || exit; git submodule update --init --recursive .
 EOF
 
-    RUN <<-EOF
+RUN <<-EOF
         mkdir /wheels
 
         # Add additional dependencies (container specific)
@@ -123,7 +207,7 @@ EOF
         # 2. If missing, add it (with optional version from env (defaults to empty string))
         # 3. If present, replace with our specified version if it exists, otherwise leave
         #    the upstream version alone.
-        set -- "redis" "lief" "pydeep2" "python-magic" "misp-lib-stix2" "maec" "mixbox" "cybox" "pymisp" "misp-stix"
+        set -- "redis" "lief" "pydeep2" "python-magic" "misp-lib-stix2" "maec" "mixbox" "cybox" "pymisp" "misp-stix" "taxii2-client" "setuptools" "supervisor"
         for mod in "$@"; do
             mod_version_var=$(echo "PYPI_${mod}_VERSION" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             mod_version=$(eval "echo \"\$$mod_version_var\"")
@@ -161,77 +245,32 @@ EOF
 
 
 FROM php-base
-    ENV DEBIAN_FRONTEND noninteractive
-    ARG CORE_TAG
-    ARG CORE_COMMIT
-    ARG PHP_VER
 
-    RUN apt-get install -y --no-install-recommends \
-        gettext \
-        procps \
-        sudo \
-        nginx \
-        supervisor \
-        cron \
-        openssl \
-        gpg \
-        gpg-agent \
-        mariadb-client \
-        rsync \
-        # PHP Requirements
-        php8.2 \
-        php8.2-apcu \
-        php8.2-curl \
-        php8.2-xml \
-        php8.2-intl \
-        php8.2-bcmath \
-        php8.2-mbstring \
-        php8.2-mysql \
-        php8.2-redis \
-        php8.2-gd \
-        php8.2-fpm \
-        php8.2-zip \
-        php8.2-ldap \
-        libmagic1 \
-        libldap-common \
-        librdkafka1 \
-        libbrotli1 \
-        libsimdjson14 \
-        libzstd1 \
-        ssdeep \
-        libfuzzy2 \
-        # Unsure we need these
-        zip unzip \
-        # Require for advanced an unattended configuration
-        curl jq \
-        && apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+# Remove some defaults (kernel logging) and fix alternatives
+RUN sed -i '/imklog/s/^/#/' /etc/rsyslog.conf
+RUN update-alternatives --set php /usr/bin/php8.4
+RUN apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
-    RUN update-alternatives --set php /usr/bin/php8.2
+# Install python modules
+COPY --from=python-build /wheels /wheels
+RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+# PHP: install prebuilt libraries, then install the app's PHP deps
+COPY --from=php-build /pecl_libs.tar.gz /
+RUN tar -xzf /pecl_libs.tar.gz && rm /pecl_libs.tar.gz
 
-    # Install python modules
-    COPY --from=python-build /wheels /wheels
-    RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+# Do an early chown to limit image size
+COPY --from=python-build --chown=www-data:www-data --chmod=0550 /var/www/MISP /var/www/MISP
+COPY --from=composer-build --chown=www-data:www-data --chmod=0550 /tmp/composer.lock /var/www/MISP/app/composer.lock
+COPY --from=composer-build --chown=www-data:www-data --chmod=0550 /tmp/Vendor /var/www/MISP/app/Vendor
+COPY --from=composer-build --chown=www-data:www-data --chmod=0550 /tmp/Plugin /var/www/MISP/app/Plugin
 
-    # PHP: install prebuilt libraries, then install the app's PHP deps
-    COPY --from=php-build ["/usr/lib/php/${PHP_VER}/ssdeep.so", "/usr/lib/php/${PHP_VER}/rdkafka.so", "/usr/lib/php/${PHP_VER}/brotli.so", "/usr/lib/php/${PHP_VER}/simdjson.so", "/usr/lib/php/${PHP_VER}/zstd.so", "/usr/lib/php/${PHP_VER}/"]
-
-    # Do an early chown to limit image size
-    COPY --from=python-build --chown=www-data:www-data --chmod=0550 /var/www/MISP /var/www/MISP
-    COPY --from=composer-build --chown=www-data:www-data --chmod=0550 /tmp/composer.lock /var/www/MISP/app/composer.lock
-    COPY --from=composer-build --chown=www-data:www-data --chmod=0550 /tmp/Vendor /var/www/MISP/app/Vendor
-    COPY --from=composer-build --chown=www-data:www-data --chmod=0550 /tmp/Plugin /var/www/MISP/app/Plugin
-
-    # 'setuptools' is needed at runtime by 'mixbox'
-    RUN pip install setuptools
-    RUN cp /usr/local/lib/python3.12/site-packages/setuptools/_distutils/version.py \
-        /usr/local/lib/python3.12/site-packages/mixbox/distutils_version.py
-    RUN sed -i 's/from distutils\.version/from mixbox.distutils_version/' \
-        /usr/local/lib/python3.12/site-packages/mixbox/parser.py
-    RUN pip uninstall -y setuptools pip
-
-    # Gather these in one layer, only act on actual directories under /etc/php/
-    RUN <<-EOF
-        set -- "ssdeep" "rdkafka" "brotli" "simdjson" "zstd"
+# Gather these in one layer, only act on actual directories under /etc/php/
+RUN <<-EOF
+        if [ "${CORE_FLAVOR}" = "slim" ]; then
+            set -- 
+        else
+            set -- "ssdeep" "rdkafka" "brotli" "simdjson" "zstd"
+        fi
         for mod in "$@"; do
             for dir in /etc/php/*/; do
                 echo "extension=${mod}.so" > "${dir}mods-available/${mod}.ini"
@@ -241,17 +280,17 @@ FROM php-base
         phpenmod redis
 EOF
 
-    # nginx
-    RUN rm /etc/nginx/sites-enabled/*; mkdir -p /run/php /etc/nginx/certs
+# nginx
+RUN rm /etc/nginx/sites-enabled/*; mkdir -p /run/php /etc/nginx/certs
 
-    # Make a copy of the file and configuration stores, so we can sync from it
+# Make a copy of the file and configuration stores, so we can sync from it
 
-    # The spirit of the upstream dockerization is to make:
-    #   1) User and group aligned in terms of permissions
-    #   2) Files executable and read only, because of some rogue scripts like 'cake'
-    #   3) Directories writable, because sometimes MISP add new files
+# The spirit of the upstream dockerization is to make:
+#   1) User and group aligned in terms of permissions
+#   2) Files executable and read only, because of some rogue scripts like 'cake'
+#   3) Directories writable, because sometimes MISP add new files
 
-    RUN <<-EOF
+RUN <<-EOF
         cp -R /var/www/MISP/app/files /var/www/MISP/app/files.dist
         echo "${CORE_COMMIT:-${CORE_TAG}}" > /var/www/MISP/app/files/VERSION
         cp -R /var/www/MISP/app/Config /var/www/MISP/app/Config.dist
@@ -262,9 +301,9 @@ EOF
         touch /var/www/MISP/.git/ORIG_HEAD && chmod 0600 /var/www/MISP/.git/ORIG_HEAD && chown www-data:www-data /var/www/MISP/.git/ORIG_HEAD
 EOF
 
-    # Copy all our image specific files to appropriate locations
-    COPY files/ /
-    ENTRYPOINT [ "/entrypoint.sh" ]
+# Copy all our image specific files to appropriate locations
+COPY files/ /
+ENTRYPOINT [ "/entrypoint.sh" ]
 
-    # Change Workdirectory
-    WORKDIR /var/www/MISP
+# Change Workdirectory
+WORKDIR /var/www/MISP

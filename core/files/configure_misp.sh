@@ -7,8 +7,8 @@ source /utilities.sh
 # envsubst won't evaluate anything like $() or conditional variable expansion so lets do that here
 export PYTHON_BIN="$(which python3)"
 export GPG_BINARY="$(which gpg)"
-export SETTING_CONTACT="${MISP_CONTACT-$ADMIN_EMAIL}"
-export SETTING_EMAIL="${MISP_EMAIL-$ADMIN_EMAIL}"
+export SETTING_CONTACT="${MISP_CONTACT}"
+export SETTING_EMAIL="${MISP_EMAIL}"
 
 init_minimum_config() {
     # Temporarily disable DB to apply config file settings, reenable after if needed 
@@ -43,7 +43,7 @@ configure_gnupg() {
 Key-Type: RSA
 Key-Length: 3072
 Name-Real: MISP Admin
-Name-Email: ${MISP_EMAIL-$ADMIN_EMAIL}
+Name-Email: ${MISP_EMAIL}
 Expire-Date: 0
 Passphrase: $GPG_PASSPHRASE
 %commit
@@ -63,7 +63,7 @@ GPGEOF
 
     if [ ! -f ${GPG_ASC} ]; then
         echo "... exporting GPG key"
-        sudo -u www-data gpg --homedir ${GPG_DIR} --export --armor ${MISP_EMAIL-$ADMIN_EMAIL} > ${GPG_ASC}
+        sudo -u www-data gpg --homedir ${GPG_DIR} --export --armor ${MISP_EMAIL} > ${GPG_ASC}
     else
         echo "... found exported key ${GPG_ASC}"
     fi
@@ -79,7 +79,7 @@ set_up_oidc() {
 
         # Check required variables
         # OIDC_ISSUER may be empty
-        check_env_vars OIDC_PROVIDER_URL OIDC_CLIENT_ID OIDC_CLIENT_SECRET OIDC_ROLES_PROPERTY OIDC_ROLES_MAPPING OIDC_DEFAULT_ORG
+        check_env_vars OIDC_PROVIDER_URL OIDC_CLIENT_ID OIDC_ROLES_PROPERTY OIDC_ROLES_MAPPING OIDC_DEFAULT_ORG
 
         # Configure OIDC in MISP
         sudo -u www-data php /var/www/MISP/tests/modify_config.php modify "{
@@ -95,9 +95,15 @@ set_up_oidc() {
                 ${OIDC_ISSUER:+\"issuer\": \"${OIDC_ISSUER}\",}
                 \"client_id\": \"${OIDC_CLIENT_ID}\",
                 \"client_secret\": \"${OIDC_CLIENT_SECRET}\",
+                \"code_challenge_method\": \"${OIDC_CODE_CHALLENGE_METHOD}\",
                 \"roles_property\": \"${OIDC_ROLES_PROPERTY}\",
                 \"role_mapper\": ${OIDC_ROLES_MAPPING},
-                \"default_org\": \"${OIDC_DEFAULT_ORG}\"
+                \"default_org\": \"${OIDC_DEFAULT_ORG}\",
+                \"mixedAuth\": ${OIDC_MIXEDAUTH},
+                \"authentication_method\": \"${OIDC_AUTH_METHOD}\",
+                \"redirect_uri\": \"${OIDC_REDIRECT_URI}\",
+                \"disable_request_object\": \"${OIDC_DISABLE_REQUEST_OBJECT}\",
+                \"skipProxy\": ${OIDC_SKIP_PROXY}
             }
         }" > /dev/null
 
@@ -114,7 +120,12 @@ set_up_oidc() {
 
         # Set the custom logout URL for OIDC if it is defined
         if [[ -n "${OIDC_LOGOUT_URL}" ]]; then
-            sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Plugin.CustomAuth_custom_logout" "${OIDC_LOGOUT_URL}&post_logout_redirect_uri=${BASE_URL}/users/login"
+            if [[ "${OIDC_LOGOUT_URL}" == *"?"* ]]; then
+                OIDC_LOGOUT_URL_COMPLETE="${OIDC_LOGOUT_URL}&post_logout_redirect_uri=${BASE_URL}/users/login"
+            else
+                OIDC_LOGOUT_URL_COMPLETE="${OIDC_LOGOUT_URL}?post_logout_redirect_uri=${BASE_URL}/users/login"
+            fi
+            sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Plugin.CustomAuth_custom_logout" "${OIDC_LOGOUT_URL_COMPLETE}"
         else
             echo "OIDC_LOGOUT_URL is not set"
         fi
@@ -132,6 +143,7 @@ set_up_oidc() {
                 \"issuer\": \"\",
                 \"client_id\": \"\",
                 \"client_secret\": \"\",
+                \"code_challenge_method\": \"\",
                 \"roles_property\": \"\",
                 \"role_mapper\": \"\",
                 \"default_org\": \"\"
@@ -155,35 +167,87 @@ set_up_oidc() {
     fi
 }
 
+set_up_apachesecureauth() {
+    if [[ "$APACHESECUREAUTH_LDAP_ENABLE" != "true" ]]; then
+        echo "... LDAP APACHESECUREAUTH authentication disabled"
+        return
+    fi
+
+
+    if [ ! -z "$APACHESECUREAUTH_LDAP_OLD_VAR_DETECT" ]; then
+        echo "WARNING: old variables used for APACHESECUREAUTH bloc in env file. Switch to the new naming convention."
+    fi
+
+    # Check required variables
+    # APACHESECUREAUTH_LDAP_SEARCH_FILTER may be empty
+    check_env_vars APACHESECUREAUTH_LDAP_APACHE_ENV APACHESECUREAUTH_LDAP_SERVER APACHESECUREAUTH_LDAP_STARTTLS APACHESECUREAUTH_LDAP_READER_USER APACHESECUREAUTH_LDAP_READER_PASSWORD APACHESECUREAUTH_LDAP_DN APACHESECUREAUTH_LDAP_SEARCH_ATTRIBUTE APACHESECUREAUTH_LDAP_FILTER APACHESECUREAUTH_LDAP_DEFAULT_ROLE_ID APACHESECUREAUTH_LDAP_DEFAULT_ORG APACHESECUREAUTH_LDAP_OPT_PROTOCOL_VERSION APACHESECUREAUTH_LDAP_OPT_NETWORK_TIMEOUT APACHESECUREAUTH_LDAP_OPT_REFERRALS
+
+    sudo -u www-data php /var/www/MISP/tests/modify_config.php modify "{
+        \"ApacheSecureAuth\": {
+            \"apacheEnv\": \"${APACHESECUREAUTH_LDAP_APACHE_ENV}\",
+            \"ldapServer\": \"${APACHESECUREAUTH_LDAP_SERVER}\",
+            \"starttls\": ${APACHESECUREAUTH_LDAP_STARTTLS},
+            \"ldapProtocol\": ${APACHESECUREAUTH_LDAP_OPT_PROTOCOL_VERSION},
+            \"ldapNetworkTimeout\": ${APACHESECUREAUTH_LDAP_OPT_NETWORK_TIMEOUT},
+            \"ldapReaderUser\": \"${APACHESECUREAUTH_LDAP_READER_USER}\",
+            \"ldapReaderPassword\": \"${APACHESECUREAUTH_LDAP_READER_PASSWORD}\",
+            \"ldapDN\": \"${APACHESECUREAUTH_LDAP_DN}\",
+            \"ldapSearchFilter\": \"${APACHESECUREAUTH_LDAP_SEARCH_FILTER}\",
+            \"ldapSearchAttribut\": \"${APACHESECUREAUTH_LDAP_SEARCH_ATTRIBUTE}\",
+            \"ldapFilter\": ${APACHESECUREAUTH_LDAP_FILTER},
+            \"ldapDefaultRoleId\": ${APACHESECUREAUTH_LDAP_DEFAULT_ROLE_ID},
+            \"ldapDefaultOrg\": \"${APACHESECUREAUTH_LDAP_DEFAULT_ORG}\",
+            \"ldapAllowReferrals\": ${APACHESECUREAUTH_LDAP_OPT_REFERRALS},
+            \"ldapEmailField\": ${APACHESECUREAUTH_LDAP_EMAIL_FIELD}
+        }
+    }" > /dev/null
+
+    # Disable password confirmation as stated at https://github.com/MISP/MISP/issues/8116
+    sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Security.require_password_confirmation" false
+}
+
 set_up_ldap() {
-    if [[ "$LDAP_ENABLE" != "true" ]]; then
-        echo "... LDAP authentication disabled"
+    if [[ "$LDAPAUTH_ENABLE" != "true" ]]; then
+        echo "... LDAPAUTH authentication disabled"
         return
     fi
 
     # Check required variables
-    # LDAP_SEARCH_FILTER may be empty
-    check_env_vars LDAP_APACHE_ENV LDAP_SERVER LDAP_STARTTLS LDAP_READER_USER LDAP_READER_PASSWORD LDAP_DN LDAP_SEARCH_ATTRIBUTE LDAP_FILTER LDAP_DEFAULT_ROLE_ID LDAP_DEFAULT_ORG LDAP_OPT_PROTOCOL_VERSION LDAP_OPT_NETWORK_TIMEOUT LDAP_OPT_REFERRALS 
+    # LDAPAUTH_LDAPSEARCHFILTER may be empty
+    check_env_vars LDAPAUTH_LDAPSERVER LDAPAUTH_LDAPDN LDAPAUTH_LDAPREADERUSER LDAPAUTH_LDAPREADERPASSWORD LDAPAUTH_LDAPSEARCHATTRIBUTE LDAPAUTH_LDAPDEFAULTROLEID LDAPAUTH_LDAPDEFAULTORGID LDAPAUTH_LDAPEMAILFIELD LDAPAUTH_LDAPNETWORKTIMEOUT LDAPAUTH_LDAPPROTOCOL LDAPAUTH_LDAPALLOWREFERRALS LDAPAUTH_STARTTLS LDAPAUTH_MIXEDAUTH LDAPAUTH_UPDATEUSER LDAPAUTH_DEBUG LDAPAUTH_LDAPTLSREQUIRECERT LDAPAUTH_LDAPTLSCUSTOMCACERT LDAPAUTH_LDAPTLSCRLCHECK LDAPAUTH_LDAPTLSPROTOCOLMIN
 
     sudo -u www-data php /var/www/MISP/tests/modify_config.php modify "{
-        \"ApacheSecureAuth\": {
-            \"apacheEnv\": \"${LDAP_APACHE_ENV}\",
-            \"ldapServer\": \"${LDAP_SERVER}\",
-            \"starttls\": ${LDAP_STARTTLS},
-            \"ldapProtocol\": ${LDAP_OPT_PROTOCOL_VERSION},
-            \"ldapNetworkTimeout\": ${LDAP_OPT_NETWORK_TIMEOUT},
-            \"ldapReaderUser\": \"${LDAP_READER_USER}\",
-            \"ldapReaderPassword\": \"${LDAP_READER_PASSWORD}\",
-            \"ldapDN\": \"${LDAP_DN}\",
-            \"ldapSearchFilter\": \"${LDAP_SEARCH_FILTER}\",
-            \"ldapSearchAttribut\": \"${LDAP_SEARCH_ATTRIBUTE}\",
-            \"ldapFilter\": ${LDAP_FILTER},
-            \"ldapDefaultRoleId\": ${LDAP_DEFAULT_ROLE_ID},
-            \"ldapDefaultOrg\": \"${LDAP_DEFAULT_ORG}\",
-            \"ldapAllowReferrals\": ${LDAP_OPT_REFERRALS},
-            \"ldapEmailField\": ${LDAP_EMAIL_FIELD}
-        }
+        \"LdapAuth\": {
+          \"ldapServer\": \"${LDAPAUTH_LDAPSERVER}\",
+          \"ldapDn\": \"${LDAPAUTH_LDAPDN}\",
+          \"ldapReaderUser\": \"${LDAPAUTH_LDAPREADERUSER}\",
+          \"ldapReaderPassword\": \"${LDAPAUTH_LDAPREADERPASSWORD}\",
+          \"ldapSearchFilter\": \"${LDAPAUTH_LDAPSEARCHFILTER}\",
+          \"ldapSearchAttribute\": \"${LDAPAUTH_LDAPSEARCHATTRIBUTE}\",
+          \"ldapEmailField\": [\"${LDAPAUTH_LDAPEMAILFIELD}\"],
+          \"ldapNetworkTimeout\": ${LDAPAUTH_LDAPNETWORKTIMEOUT},
+          \"ldapProtocol\": ${LDAPAUTH_LDAPPROTOCOL},
+          \"ldapAllowReferrals\": ${LDAPAUTH_LDAPALLOWREFERRALS},
+          \"starttls\": ${LDAPAUTH_STARTTLS},
+          \"mixedAuth\": ${LDAPAUTH_MIXEDAUTH},
+          \"ldapDefaultOrgId\": ${LDAPAUTH_LDAPDEFAULTORGID},
+          \"ldapDefaultRoleId\": ${LDAPAUTH_LDAPDEFAULTROLEID},
+          \"updateUser\": ${LDAPAUTH_UPDATEUSER},
+          \"debug\": ${LDAPAUTH_DEBUG},
+          \"ldapTlsRequireCert\": \"${LDAPAUTH_LDAPTLSREQUIRECERT}\",
+          \"ldapTlsCustomCaCert\": ${LDAPAUTH_LDAPTLSCUSTOMCACERT},
+          \"ldapTlsCrlCheck\": \"${LDAPAUTH_LDAPTLSCRLCHECK}\",
+          \"ldapTlsProtocolMin\": \"${LDAPAUTH_LDAPTLSPROTOCOLMIN}\"
+       }
     }" > /dev/null
+
+    # Configure LdapAuth in MISP
+    sudo -u www-data php /var/www/MISP/tests/modify_config.php modify "{
+            \"Security\": {
+                \"auth\": [\"LdapAuth.Ldap\"]
+            }
+        }" > /dev/null
+
 
     # Disable password confirmation as stated at https://github.com/MISP/MISP/issues/8116
     sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Security.require_password_confirmation" false
@@ -290,22 +354,39 @@ init_user() {
     fi
 
     if [ -n "$ADMIN_KEY" ]; then
-        echo "... setting admin key to '${ADMIN_KEY}'"
+        if [ "$DISABLE_PRINTING_PLAINTEXT_CREDENTIALS" == "true" ]; then
+            echo "... setting admin key from environment variable"
+        else
+            echo "... setting admin key to '${ADMIN_KEY}'"
+        fi
         CHANGE_CMD=(sudo -u www-data /var/www/MISP/app/Console/cake User change_authkey 1 "${ADMIN_KEY}")
     elif [ -z "$ADMIN_KEY" ] && [ "$AUTOGEN_ADMIN_KEY" == "true" ]; then
-        echo "... regenerating admin key (set \$ADMIN_KEY if you want it to change)"
-        CHANGE_CMD=(sudo -u www-data /var/www/MISP/app/Console/cake User change_authkey 1)
+        HAS_VALID_KEY=$($MYSQL_CMD -N -s -e 'SELECT EXISTS(SELECT 1 FROM auth_keys WHERE user_id = 1 AND (expiration = 0 OR expiration > UNIX_TIMESTAMP()));')
+	if (( HAS_VALID_KEY == 0 )); then
+            echo "... regenerating admin key (set \$ADMIN_KEY if you want it to change)"
+            CHANGE_CMD=(sudo -u www-data /var/www/MISP/app/Console/cake User change_authkey 1)
+	else
+	    echo "... valid admin key for admin user found, not changing"
+	fi
     else
         echo "... admin user key auto generation disabled"
     fi
 
     if [[ -v CHANGE_CMD[@] ]]; then
         ADMIN_KEY=$("${CHANGE_CMD[@]}" | awk 'END {print $NF; exit}')
-        echo "... admin user key set to '${ADMIN_KEY}'"
+        if [ "$DISABLE_PRINTING_PLAINTEXT_CREDENTIALS" == "true" ]; then
+            echo "... admin user key set"
+        else
+            echo "... admin user key set to '${ADMIN_KEY}'"
+        fi
     fi
 
     if [ ! -z "$ADMIN_PASSWORD" ]; then
-        echo "... setting admin password to '${ADMIN_PASSWORD}'"
+        if [ "$DISABLE_PRINTING_PLAINTEXT_CREDENTIALS" == "true" ]; then
+            echo "... setting admin password from environment variable"
+        else
+            echo "... setting admin password to '${ADMIN_PASSWORD}'"
+        fi
         PASSWORD_POLICY=$(sudo -u www-data /var/www/MISP/app/Console/cake Admin getSetting "Security.password_policy_complexity" | jq ".value" -r)
         PASSWORD_LENGTH=$(sudo -u www-data /var/www/MISP/app/Console/cake Admin getSetting "Security.password_policy_length" | jq ".value" -r)
         sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Security.password_policy_length" 1
@@ -336,6 +417,12 @@ apply_critical_fixes() {
 
 apply_optional_fixes() {
     init_settings "optional"
+}
+
+apply_storage_settings() {
+    if [[ -n "$S3_ACCESS_KEY" && -n "$S3_SECRET_KEY" && -n "$S3_BUCKET" && -n "$S3_ENDPOINT" ]]; then
+        init_settings "s3"
+    fi
 }
 
 # Some settings return a value from cake Admin getSetting even if not set in config.php and database.
@@ -371,9 +458,21 @@ update_components() {
 update_ca_certificates() {
     # Upgrade host os certificates
     update-ca-certificates
-    # Upgrade cake cacert.pem file from Mozilla project
-    echo "Updating /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/cacert.pem..."
-    sudo -E -u www-data curl -s --etag-compare /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/etag.txt --etag-save /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/etag.txt https://curl.se/ca/cacert.pem -o /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/cacert.pem
+    if [[ "$DISABLE_CA_REFRESH" = "true" ]]; then
+        echo "Updating /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/cacert.pem using local data..."
+        sudo cp /etc/ssl/certs/ca-certificates.crt /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/cacert.pem
+    else
+        echo "Updating /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/cacert.pem using curl data..."
+        sudo -E -u www-data curl -s --etag-compare /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/etag.txt --etag-save /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/etag.txt https://curl.se/ca/cacert.pem -o /var/www/MISP/app/Lib/cakephp/lib/Cake/Config/cacert.pem
+    fi
+}
+
+configure_misp_guard_ca() {
+    if [[ "$COMPOSE_PROFILES" = "misp-guard" ]]; then
+        echo "... configuring misp-guard CA certificate"
+        chown www-data:www-data /usr/local/share/ca-certificates/misp_guard/mitmproxy-ca.pem
+        sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "MISP.ca_path" "/usr/local/share/ca-certificates/misp_guard/mitmproxy-ca.pem"
+    fi
 }
 
 create_sync_servers() {
@@ -425,6 +524,84 @@ create_sync_servers() {
     done
 }
 
+convert_cron_to_seconds() {
+    local expr="$1"
+
+    # Match "*/N * * * *" -> every N minutes
+    if [[ "$expr" =~ ^\*/([0-9]+)\ \*\ \*\ \*\ \*$ ]]; then
+        echo "$(( ${BASH_REMATCH[1]} * 60 ))"
+        return
+    fi
+
+    # Match "* */N * * *" -> every N hours
+    if [[ "$expr" =~ ^\*\ \*/([0-9]+)\ \*\ \*\ \*$ ]]; then
+        echo "$(( ${BASH_REMATCH[1]} * 3600 ))"
+        return
+    fi
+
+    # Default fallback -> warn and use 86400 (daily)
+    echo "WARNING: Unrecognized cron pattern '$expr', using default 86400 seconds (daily)" >&2
+    echo "86400"
+}
+
+create_default_scheduled_tasks() {
+    # Create default scheduled tasks
+
+    if [[ "$CRON_PULLALL" =~ ^([0-9]+)$ ]]; then
+        # Already seconds
+        PULLALL_INTERVAL="$CRON_PULLALL"
+    else
+        # Convert old cron format
+        PULLALL_INTERVAL="$(convert_cron_to_seconds "$CRON_PULLALL")"
+    fi
+
+    if [[ "$CRON_PUSHALL" =~ ^([0-9]+)$ ]]; then
+        # Already seconds
+        PUSHALL_INTERVAL="$CRON_PUSHALL"
+    else
+        # Convert old cron format
+        PUSHALL_INTERVAL="$(convert_cron_to_seconds "$CRON_PUSHALL")"
+    fi
+
+    echo "INSERT INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, params, enabled, next_execution_time, message) \
+        VALUES (1, 'Feed', 86400, 'Daily fetch of all Feeds', $CRON_USER_ID, 'fetch', 'all', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, params, enabled, next_execution_time, message) \
+        VALUES (2, 'Feed', 86400, 'Daily cache of all Feeds', $CRON_USER_ID, 'cache', 'all,all', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, params, enabled, next_execution_time, message) \
+        VALUES (3, 'Server', $PULLALL_INTERVAL, 'Daily pull of all Servers', $CRON_USER_ID, 'pull', 'all,full', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID, timer=$PULLALL_INTERVAL;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, params, enabled, next_execution_time, message) \
+        VALUES (4, 'Server', $PUSHALL_INTERVAL, 'Daily push of all Servers', $CRON_USER_ID, 'push', 'all,full', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID, timer=$PUSHALL_INTERVAL;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, enabled, next_execution_time, message) \
+        VALUES (5, 'Admin', 86400, 'Daily update of Galaxies', $CRON_USER_ID, 'updateGalaxies', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, enabled, next_execution_time, message) \
+        VALUES (6, 'Admin', 86400, 'Daily update of Taxonomies', $CRON_USER_ID, 'updateTaxonomies', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, enabled, next_execution_time, message) \
+        VALUES (7, 'Admin', 86400, 'Daily update of Warninglists', $CRON_USER_ID, 'updateWarningLists', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, enabled, next_execution_time, message) \
+        VALUES (8, 'Admin', 86400, 'Daily update of Noticelists', $CRON_USER_ID, 'updateNoticeLists', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID;" | ${MYSQL_CMD}
+    echo "INSERT IGNORE INTO $MYSQL_DATABASE.scheduled_tasks (id, type, timer, description, user_id, action, enabled, next_execution_time, message) \
+        VALUES (9, 'Admin', 86400, 'Daily update of Object Templates', $CRON_USER_ID, 'updateObjectTemplates', 1, 0, '') \
+        ON DUPLICATE KEY UPDATE user_id=$CRON_USER_ID;" | ${MYSQL_CMD}
+}
+
+print_version() {
+    VERSION_FILE="/var/www/MISP/VERSION.json"
+    if [[ -f "$VERSION_FILE" ]]; then
+        VERSION=$(jq -r '"\(.major).\(.minor).\(.hotfix)"' ${VERSION_FILE})
+    else
+        VERSION="unknown"
+    fi
+    echo "MISP | Version: ${VERSION}"
+}
+
 echo "MISP | Update CA certificates ..." && update_ca_certificates
 
 echo "MISP | Apply minimum configuration directives ..." && init_minimum_config
@@ -445,9 +622,13 @@ echo "MISP | Start component updates ..." && update_components
 
 echo "MISP | Resolve non-critical issues ..." && apply_optional_fixes
 
+echo "MISP | Configure storage ..." && apply_storage_settings
+
 echo "MISP | Create sync servers ..." && create_sync_servers
 
 echo "MISP | Set Up OIDC ..." && set_up_oidc
+
+echo "MISP | Set Up apachesecureauth ..." && set_up_apachesecureauth
 
 echo "MISP | Set Up LDAP ..." && set_up_ldap
 
@@ -457,5 +638,9 @@ echo "MISP | Set Up Session ..." && set_up_session
 
 echo "MISP | Set Up Proxy ..." && set_up_proxy
 
-echo "MISP | Mark instance live"
+echo "MISP | Create default Scheduled Tasks ..." && create_default_scheduled_tasks
+
+echo "MISP | Configure misp-guard CA certificate ..." && configure_misp_guard_ca
+
+echo "MISP | Mark instance live" && print_version
 sudo -u www-data /var/www/MISP/app/Console/cake Admin live 1

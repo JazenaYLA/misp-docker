@@ -8,6 +8,10 @@ term_proc() {
 
 trap term_proc SIGTERM
 
+redirect_logs() {
+    tail -F /var/www/MISP/app/tmp/logs/error.log > /dev/stdout 2>/dev/null &
+}
+
 change_php_vars() {
     ESCAPED=$(printf '%s\n' "$REDIS_PASSWORD" | sed -e 's/[\/&]/\\&/g')
     for FILE in /etc/php/*/fpm/php.ini
@@ -19,15 +23,31 @@ change_php_vars() {
         sed -i "s/max_execution_time = .*/max_execution_time = ${PHP_MAX_EXECUTION_TIME}/" "$FILE"
         echo "Configure PHP | Setting 'upload_max_filesize = ${PHP_UPLOAD_MAX_FILESIZE}'"
         sed -i "s/upload_max_filesize = .*/upload_max_filesize = ${PHP_UPLOAD_MAX_FILESIZE}/" "$FILE"
+        echo "Configure PHP | Setting 'max_file_uploads = ${PHP_MAX_FILE_UPLOADS}'"
+        sed -i "s/max_file_uploads = .*/max_file_uploads = ${PHP_MAX_FILE_UPLOADS}/" "$FILE"
         echo "Configure PHP | Setting 'post_max_size = ${PHP_POST_MAX_SIZE}'"
         sed -i "s/post_max_size = .*/post_max_size = ${PHP_POST_MAX_SIZE}/" "$FILE"
         echo "Configure PHP | Setting 'max_input_time = ${PHP_MAX_INPUT_TIME}'"
         sed -i "s/max_input_time = .*/max_input_time = ${PHP_MAX_INPUT_TIME}/" "$FILE"
         sed -i "s/session.save_handler = .*/session.save_handler = redis/" "$FILE"
-        echo "Configure PHP | Setting 'session.save_path = '$(echo $REDIS_HOST | grep -E '^\w+://' || echo tcp://$REDIS_HOST):$REDIS_PORT?auth=${ESCAPED}'"
-        sed -i "s|.*session.save_path = .*|session.save_path = '$(echo $REDIS_HOST | grep -E '^\w+://' || echo tcp://$REDIS_HOST):$REDIS_PORT?auth=${ESCAPED}'|" "$FILE"
+        if [[ "$ENABLE_REDIS_EMPTY_PASSWORD" = "true" ]]; then
+            echo "Configure PHP | Setting 'session.save_path = '$(echo $REDIS_HOST | grep -E '^\w+://' || echo tcp://$REDIS_HOST):$REDIS_PORT' (passwordless)"
+            sed -i "s|.*session.save_path = .*|session.save_path = '$(echo $REDIS_HOST | grep -E '^\w+://' || echo tcp://$REDIS_HOST):$REDIS_PORT'|" "$FILE"
+        elif [[ -n "$REDIS_PASSWORD" ]]; then
+            if [ "$DISABLE_PRINTING_PLAINTEXT_CREDENTIALS" == "true" ]; then
+                echo "Configure PHP | Setting 'session.save_path = '$(echo $REDIS_HOST | grep -E '^\w+://' || echo tcp://$REDIS_HOST):$REDIS_PORT?auth=<hidden>'"
+            else
+                echo "Configure PHP | Setting 'session.save_path = '$(echo $REDIS_HOST | grep -E '^\w+://' || echo tcp://$REDIS_HOST):$REDIS_PORT?auth=${ESCAPED}'"
+            fi
+            sed -i "s|.*session.save_path = .*|session.save_path = '$(echo $REDIS_HOST | grep -E '^\w+://' || echo tcp://$REDIS_HOST):$REDIS_PORT?auth=${ESCAPED}'|" "$FILE"
+        else
+            echo "ERROR: REDIS_PASSWORD is not set but ENABLE_REDIS_EMPTY_PASSWORD is false. Please set REDIS_PASSWORD or enable ENABLE_REDIS_EMPTY_PASSWORD=true for passwordless Redis."
+            exit 1
+        fi
         sed -i "s/session.sid_length = .*/session.sid_length = 64/" "$FILE"
         sed -i "s/session.use_strict_mode = .*/session.use_strict_mode = 1/" "$FILE"
+        echo "Configure PHP | Setting 'date.timezone = ${PHP_TIMEZONE}'"
+        sed -i "s/;?date.timezone = .*/date.timezone = ${PHP_TIMEZONE}/" "$FILE"
     done
 
     for FILE in /etc/php/*/fpm/pool.d/www.conf
@@ -57,13 +77,23 @@ change_php_vars() {
             echo "Configure PHP | Disabling 'pm.status_listen'"
             sed -i -E "s/^pm.status_listen =/;pm.status_listen =/" "$FILE"
         fi
+        if [[ -n "$PHP_LISTEN_FPM" ]]; then
+            echo "Configure PHP | Setting 'listen' to [::]:9002"
+            sed -i "/^listen =/s@=.*@= [::]:9002@" "$FILE"
+        fi
+
     done
 }
+
+# Hinders further execution when sourced from other scripts
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return
+fi
 
 echo "Configure PHP | Change PHP values ..." && change_php_vars
 
 echo "Configure PHP | Starting PHP FPM"
-/usr/sbin/php-fpm8.2 -R -F & master_pid=$!
+/usr/sbin/php-fpm8.4 -R -F & master_pid=$!
 
 # Wait for it
 wait "$master_pid"
