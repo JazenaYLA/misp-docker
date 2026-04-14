@@ -16,21 +16,29 @@ services:
       - "SMARTHOST_USER=${SMARTHOST_USER}"
       - "SMARTHOST_PASSWORD=${SMARTHOST_PASSWORD}"
       - "SMARTHOST_ALIASES=${SMARTHOST_ALIASES}"
+      - "TZ=${TZ:-UTC}"
 
   redis:
     image: ${REGISTRY_MIRROR_URL:-}valkey/valkey:7.2
     restart: always
     command: |
       sh -c '
-        if [ "$${ENABLE_REDIS_EMPTY_PASSWORD:-false}" = "true" ]; then
-          exec valkey-server
+        if [ "$${DISABLE_REDIS_SNAPSHOT}" = "true" ] ; then
+            redis_snapshot="--save \"\""
         else
-          exec valkey-server --requirepass "$${REDIS_PASSWORD:-redispassword}"
+            redis_snapshot=""
+        fi
+        if [ "$${ENABLE_REDIS_EMPTY_PASSWORD:-false}" = "true" ]; then
+          exec valkey-server $${redis_snapshot}
+        else
+          exec valkey-server --requirepass "$${REDIS_PASSWORD:-redispassword}" $${redis_snapshot}
         fi
       '
     environment:
       - "ENABLE_REDIS_EMPTY_PASSWORD=${ENABLE_REDIS_EMPTY_PASSWORD:-false}"
       - "REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}"
+      - "TZ=${TZ:-UTC}"
+      - "DISABLE_REDIS_SNAPSHOT=${DISABLE_REDIS_SNAPSHOT:-false}"
     healthcheck:
       test: |
         sh -c '
@@ -57,6 +65,7 @@ services:
       - "MYSQL_PASSWORD=${MYSQL_PASSWORD:-example}"
       - "MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-password}"
       - "MYSQL_DATABASE=${MYSQL_DATABASE:-misp}"
+      - "TZ=${TZ:-UTC}"
     command: "\
       --innodb-buffer-pool-size=${INNODB_BUFFER_POOL_SIZE:-2048M} \
       --innodb-change-buffering=${INNODB_CHANGE_BUFFERING:-none} \
@@ -142,6 +151,7 @@ services:
       - "ENABLE_BACKGROUND_UPDATES=${ENABLE_BACKGROUND_UPDATES}"
       - "ENCRYPTION_KEY=${ENCRYPTION_KEY}"
       - "SALT=${SALT}"
+      - "UUID=${UUID}"
       - "DISABLE_CA_REFRESH=${DISABLE_CA_REFRESH}"
       - "DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=${DISABLE_PRINTING_PLAINTEXT_CREDENTIALS}"
       # standard settings
@@ -154,6 +164,7 @@ services:
       - "ADMIN_ORG_UUID=${ADMIN_ORG_UUID}"
       - "GPG_PASSPHRASE=${GPG_PASSPHRASE}"
       - "ATTACHMENTS_DIR=${ATTACHMENTS_DIR}"
+      - "TZ=${TZ:-UTC}"
       - "ENABLE_THEMES=${ENABLE_THEMES}"
       # OIDC authentication settings
       - "OIDC_ENABLE=${OIDC_ENABLE}"
@@ -317,7 +328,6 @@ services:
       - "PHP_SESSION_COOKIE_SECURE=${PHP_SESSION_COOKIE_SECURE:-true}"
       - "PHP_SESSION_COOKIE_DOMAIN=${PHP_SESSION_COOKIE_DOMAIN}"
       - "PHP_SESSION_COOKIE_SAMESITE=${PHP_SESSION_COOKIE_SAMESITE:-Lax}"
-      - "PHP_TIMEZONE=${PHP_TIMEZONE:-UTC}"
       # security settings
       - "HSTS_MAX_AGE=${HSTS_MAX_AGE}"
       - "X_FRAME_OPTIONS=${X_FRAME_OPTIONS}"
@@ -347,6 +357,8 @@ services:
       - "./custom/expansion/:/custom/expansion/:Z"
       - "./custom/export_mod/:/custom/export_mod/:Z"
       - "./custom/import_mod/:/custom/import_mod/:Z"
+    environment:  
+      - "TZ=${TZ:-UTC}"
 
   misp-guard:
     profiles:
@@ -365,6 +377,7 @@ services:
     environment:
       - "GUARD_PORT=${GUARD_PORT:-8888}"
       - "GUARD_ARGS=${GUARD_ARGS}"
+      - "TZ=${TZ:-UTC}"
     volumes:
       - ./guard/config.json:/config.json:ro
       - misp_guard_ca:/misp_guard_ca
