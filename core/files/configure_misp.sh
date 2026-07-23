@@ -103,6 +103,7 @@ set_up_oidc() {
                 \"authentication_method\": \"${OIDC_AUTH_METHOD}\",
                 \"redirect_uri\": \"${OIDC_REDIRECT_URI}\",
                 \"disable_request_object\": \"${OIDC_DISABLE_REQUEST_OBJECT}\",
+                \"disable_pushed_authorization_request\": \"${OIDC_DISABLE_PUSHED_AUTHORIZATION_REQUEST}\",
                 \"skipProxy\": ${OIDC_SKIP_PROXY},
                 \"allow_email_linking\": ${OIDC_ALLOW_EMAIL_LINKING},
                 \"require_email_verified\": ${OIDC_REQUIRE_EMAIL_VERIFIED}
@@ -119,6 +120,21 @@ set_up_oidc() {
                 }
             }" > /dev/null
         fi
+
+        # Set a custom label for the OIDC login button (shown when OIDC_MIXEDAUTH is enabled).
+        # Enforced on every start: when unset, clear any previous value so MISP falls back to
+        # its default ("Login with OIDC") instead of keeping a stale label.
+        if [[ -n "${OIDC_LOGIN_TEXT}" ]]; then
+            # JSON-encode the value so labels containing quotes/backslashes don't break the payload
+            OIDC_LOGIN_TEXT_JSON=$(printf '%s' "${OIDC_LOGIN_TEXT}" | jq -Rs .)
+        else
+            OIDC_LOGIN_TEXT_JSON='""'
+        fi
+        sudo -u www-data php /var/www/MISP/tests/modify_config.php modify "{
+            \"OidcAuth\": {
+                \"login_button_text\": ${OIDC_LOGIN_TEXT_JSON}
+            }
+        }" > /dev/null
 
         # Set the custom logout URL for OIDC if it is defined
         if [[ -n "${OIDC_LOGOUT_URL}" ]]; then
@@ -148,7 +164,8 @@ set_up_oidc() {
                 \"code_challenge_method\": \"\",
                 \"roles_property\": \"\",
                 \"role_mapper\": \"\",
-                \"default_org\": \"\"
+                \"default_org\": \"\",
+                \"login_button_text\": \"\"
             }
         }" > /dev/null
 
@@ -393,7 +410,9 @@ set_up_custom_auth() {
         sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Plugin.CustomAuth_name" "External Authentication"
         sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Plugin.CustomAuth_disable_logout" false
         sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q -n "Plugin.CustomAuth_custom_password_reset"
-        sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q -n "Plugin.CustomAuth_custom_logout"
+        if [[ "$OIDC_ENABLE" != "true" || -z "${OIDC_LOGOUT_URL:-}" ]]; then
+            sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q -n "Plugin.CustomAuth_custom_logout"
+        fi
         # Re-enable settings
         sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "Security.require_password_confirmation" true
         sudo -u www-data /var/www/MISP/app/Console/cake Admin setSetting -q "MISP.log_auth" true
